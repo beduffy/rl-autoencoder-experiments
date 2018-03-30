@@ -3,6 +3,7 @@ import sys
 import argparse
 import glob
 
+import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,7 +19,7 @@ from torchvision.utils import save_image
 
 
 parser = argparse.ArgumentParser(description='VAE MNIST Example')
-parser.add_argument('--batch-size', type=int, default=2, metavar='N',
+parser.add_argument('--batch-size', type=int, default=32, metavar='N',
                     help='input batch size for training (default: 128)')
 parser.add_argument('--epochs', type=int, default=50, metavar='N',
                     help='number of epochs to train (default: 10)')
@@ -36,23 +37,23 @@ torch.manual_seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
 
-
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 
-def preprocess_image(obs):
-    pass
 
-normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+# normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+#                                      std=[0.229, 0.224, 0.225])
 transform = transforms.Compose([
-            # transforms.RandomResizedCrop(224),
-            # transforms.RandomHorizontalFlip(),
-
             transforms.ToPILImage(),
-            transforms.Resize((110, 84)),
-            transforms.RandomCrop(84),
-            transforms.Resize(64),
-            transforms.ToTensor(),
+            # transforms.Resize((110, 80), Image.NEAREST), # 84 in DQN paper
+            transforms.Resize((110, 84), Image.NEAREST), # 84 in DQN paper
+            # transforms.Resize((80, 110), Image.NEAREST), # but 80 is half of 160
+            # transforms.RandomCrop(84), # todo take bottom
+            # transforms.Resize(64),
+            # transforms.Lambda(lambda x: x[:80, :]),
+            lambda x: np.array(x)[-84:, :],
+            transforms.ToPILImage(), # can do so much better than this
+            transforms.Resize(64, Image.NEAREST), # todo could also just adapt architecture to deal with 84x84
+            transforms.ToTensor()
             # normalize,
         ])
 
@@ -62,19 +63,26 @@ def load_all_images():
     print('Number of files:', len(image_npy_files))
 
     all_images = []
-
-    for image_path in image_npy_files[0:10]:
+    for idx, image_path in enumerate(image_npy_files):
         loaded_obs = np.load(image_path)
+        # resized_loaded_obs = cv2.resize(loaded_obs, dsize=(110, 80), interpolation=cv2.INTER_CUBIC)
+        # resized_loaded_obs = cv2.resize(loaded_obs, dsize=(80, 110), interpolation=cv2.INTER_NEAREST)
+
         # all_images.append(transform(Image.fromarray(loaded_obs)))
         all_images.append(transform(loaded_obs))
-#
-    all_images = np.concatenate(all_images).reshape(-1, 64, 64, 3)
-    print(all_images.shape)
+        # all_images.append(transform(resized_loaded_obs))
 
-    # print(all_images[300])
-    # sys.exit()
-    # imgplot = plt.imshow(all_images[300])
-    # plt.show()
+        # print(transform(loaded_obs).shape)
+        # print(loaded_obs.shape)
+        # plt.imshow(loaded_obs)
+        # plt.show()
+        # plt.imshow(transform(loaded_obs).permute(1, 2, 0))
+        # plt.show()
+        # sys.exit()
+
+    all_images = np.concatenate(all_images).reshape(-1, 64, 64, 3)
+    # all_images = np.concatenate(all_images).reshape(-1, 84, 84, 3)
+    print(all_images.shape)
 
     return all_images
 
@@ -132,37 +140,9 @@ class VAE(nn.Module):
 class ConvVAE(nn.Module):
     def __init__(self):
         super(ConvVAE, self).__init__()
+        # Created from diagram in appendix of https://worldmodels.github.io/
 
-        # self.layer1_en = nn.Sequential(
-        #     nn.Conv2d(3, 16, kernel_size=5, stride=2, padding=2),
-        #     nn.BatchNorm2d(16),
-        #     nn.ReLU(),
-        #     # nn.MaxPool2d(2)
-        # )
-        # self.layer2_en = nn.Sequential(
-        #     nn.Conv2d(16, 36, kernel_size=5, stride=2, padding=2),
-        #     nn.BatchNorm2d(36),
-        #     nn.ReLU(),
-        #     # nn.MaxPool2d(2)
-        # )
-        # self.fc_en_1 = nn.Linear(53 * 40 * 36, 36)
-        # self.fc_en_2 = nn.Linear(53 * 40 * 36, 36)
-        #
-        # # self.layer1_de = nn.Sequential(
-        # #     nn.ConvTranspose2d(36, 16, kernel_size=5, stride=2, padding=2, output_size=(53, 40)),
-        # #     nn.BatchNorm2d(16),
-        # #     nn.ReLU(),
-        # #     # nn.MaxPool2d(2)
-        # # )
-        # # self.layer2_de = nn.Sequential(
-        # #     nn.ConvTranspose2d(16, 3, kernel_size=5, stride=2, padding=2, output_size=torch.Size(105, 90)),
-        # #     nn.BatchNorm2d(3),
-        # #     nn.ReLU(),
-        # #     # nn.MaxPool2d(2, padding=1)
-        # # )
-        #
-        # self.layer1_de = nn.ConvTranspose2d(36, 16, kernel_size=5, stride=2, padding=2)
-        # self.layer2_de = nn.ConvTranspose2d(16, 8, kernel_size=5, stride=2, padding=2)
+        self.latent_dim_size = 32
 
         # Convolution layers
         self.layer1_en = nn.Sequential(
@@ -182,10 +162,10 @@ class ConvVAE(nn.Module):
             nn.ReLU()
         )
 
-        self.fc_to_mu = nn.Linear(2 * 2 * 256, 32)
-        self.fc_to_sigma = nn.Linear(2 * 2 * 256, 32)
+        self.fc_to_mu = nn.Linear(2 * 2 * 256, self.latent_dim_size)
+        self.fc_to_sigma = nn.Linear(2 * 2 * 256, self.latent_dim_size)
 
-        self.fc_from_z = nn.Linear(32, 1024)
+        self.fc_from_z = nn.Linear(self.latent_dim_size, 1024)
 
         # Deconvolution layers
         self.layer1_de = nn.Sequential(
@@ -211,18 +191,14 @@ class ConvVAE(nn.Module):
     def encode(self, x):
         x = x.permute(0, 3, 1, 2)
 
-        # out = self.layer1_en(x)
-        # out = self.layer2_en(out)
-        # out = out.view(out.size(0), -1)
-
         out = self.layer1_en(x)
         out = self.layer2_en(out)
         out = self.layer3_en(out)
         out = self.layer4_en(out)
 
-        out = out.view(out.size(0), 2, 2, 256)
+        out = out.view(out.size(0), -1)
 
-        return self.fc_en_1(out), self.fc_en_2(out)
+        return self.fc_to_mu(out), self.fc_to_sigma(out)
 
     def reparameterize(self, mu, logvar):
         if self.training:
@@ -233,33 +209,34 @@ class ConvVAE(nn.Module):
             return mu
 
     def decode(self, z):
-        z = z.view(z.size(0), 36, 1, 1)
-        # h3 = self.layer1_de(z)
-        # h4 = self.layer2_de(h3)
+        out = self.fc_from_z(z)
+        out = out.view(out.size(0), -1, 1, 1)
 
-        # h3 = self.relu(self.layer1_de(z, output_size=(53, 40)))
-        h3 = self.relu(self.layer1_de(z, output_size=(2, 2)))
-        h4 = self.relu(self.layer2_de(h3, output_size=(10, 10)))
-        # h4 = self.layer2_de(h3)
+        out = self.layer1_de(out)
+        out = self.layer2_de(out)
+        out = self.layer3_de(out)
+        out = self.layer4_de(out)
 
-        return self.sigmoid(h4)
+        return out
 
     def forward(self, x):
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
         return self.decode(z), mu, logvar
 
-model = VAE()
-#model = ConvVAE()
+# model = VAE()
+model = ConvVAE()
 if args.cuda:
     model.cuda()
-optimizer = optim.Adam(model.parameters(), lr=1e-3)
+# optimizer = optim.Adam(model.parameters(), lr=1e-3)
+optimizer = optim.Adam(model.parameters(), lr=0.008) # 0.008 got down to ~1050 # 0.0075 got to 1036
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
 
 # Reconstruction + KL divergence losses summed over all elements and batch
 def loss_function(recon_x, x, mu, logvar):
-    BCE = F.binary_cross_entropy(recon_x, x.view(-1, 210 * 160 * 3), size_average=False)
+    # BCE = F.binary_cross_entropy(recon_x, x.view(-1, 210 * 160 * 3), size_average=False)
+    BCE = F.binary_cross_entropy(recon_x, x, size_average=False)
 
     # see Appendix B from VAE paper:
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
@@ -284,6 +261,8 @@ def train(epoch):
         loss.backward()
         train_loss += loss.data[0]
         optimizer.step()
+
+        # todo use vizdom to visualise
         if batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
@@ -306,6 +285,7 @@ def test(epoch):
         test_loss += loss_function(recon_batch, data, mu, logvar).data[0]
         if i == 0:
             n = min(data.size(0), 8)
+            data = data.permute(0, 3, 1, 2)
             # print(data[:n].shape)
             # print(recon_batch.shape)
             # print(recon_batch.view(args.batch_size, 210, 160, 3)[:n].shape)
@@ -340,9 +320,14 @@ for epoch in range(1, args.epochs + 1):
     scheduler.step()
     train(epoch)
     test(epoch)
-    sample = Variable(torch.randn(64, 20))
+    sample = Variable(torch.randn(64, model.latent_dim_size))
     if args.cuda:
         sample = sample.cuda()
     sample = model.decode(sample).cpu()
-    save_image(sample.data.view(64, 3, 210, 160),
+
+    save_image(sample.data.view(64, 3, 64, 64),
                'atari_results/sample_' + str(epoch) + '.png')
+
+    if epoch == 30:
+        plt.imshow(sample.data[0].permute(1, 2, 0))
+        plt.show()
