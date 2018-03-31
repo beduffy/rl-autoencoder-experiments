@@ -16,53 +16,17 @@ from torchvision import datasets, transforms
 from torchvision.utils import save_image
 
 
-
-
-parser = argparse.ArgumentParser(description='VAE MNIST Example')
-parser.add_argument('--batch-size', type=int, default=32, metavar='N',
-                    help='input batch size for training (default: 128)')
-parser.add_argument('--epochs', type=int, default=50, metavar='N',
-                    help='number of epochs to train (default: 10)')
-parser.add_argument('--no-cuda', action='store_true', default=False,
-                    help='enables CUDA training')
-parser.add_argument('--seed', type=int, default=1, metavar='S',
-                    help='random seed (default: 1)')
-parser.add_argument('--log-interval', type=int, default=10, metavar='N',
-                    help='how many batches to wait before logging training status')
-args = parser.parse_args()
-args.cuda = not args.no_cuda and torch.cuda.is_available()
-
-
-torch.manual_seed(args.seed)
-if args.cuda:
-    torch.cuda.manual_seed(args.seed)
-
-kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-
-
-# normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-#                                      std=[0.229, 0.224, 0.225])
-transform = transforms.Compose([
-            transforms.ToPILImage(),
-            # transforms.Resize((110, 80), Image.NEAREST), # 84 in DQN paper
-            transforms.Resize((110, 84), Image.NEAREST), # 84 in DQN paper
-            # transforms.Resize((80, 110), Image.NEAREST), # but 80 is half of 160
-            # transforms.RandomCrop(84), # todo take bottom
-            # transforms.Resize(64),
-            # transforms.Lambda(lambda x: x[:80, :]),
-            lambda x: np.array(x)[-84:, :],
-            transforms.ToPILImage(), # can do so much better than this
-            transforms.Resize(64, Image.NEAREST), # todo could also just adapt architecture to deal with 84x84
-            transforms.ToTensor()
-            # normalize,
-        ])
-
 def load_all_images():
     image_npy_files = glob.glob('saved_images/saved_image*')
     # print(image_npy_files)
     print('Number of files:', len(image_npy_files))
 
+    input_shape = (64, 64, 3)
+
+    # image_npy_files = image_npy_files[0:4]
+
     all_images = []
+
     for idx, image_path in enumerate(image_npy_files):
         loaded_obs = np.load(image_path)
         # resized_loaded_obs = cv2.resize(loaded_obs, dsize=(110, 80), interpolation=cv2.INTER_CUBIC)
@@ -71,6 +35,16 @@ def load_all_images():
         # all_images.append(transform(Image.fromarray(loaded_obs)))
         all_images.append(transform(loaded_obs))
         # all_images.append(transform(resized_loaded_obs))
+
+        # if idx % 2 == 0:
+        #     # loaded_obs = np.zeros((64, 64, 3)).astype(float)
+        #     # loaded_obs = np.ones((64, 64, 3)).astype(float)
+        #     loaded_obs = np.full(input_shape, 0.5)
+        # else:
+        #     # loaded_obs = np.ones((64, 64, 3)).astype(float)
+        #     loaded_obs = np.full(input_shape, 0.5)
+        # # all_images.append(transform(loaded_obs))
+        # all_images.append(loaded_obs)
 
         # print(transform(loaded_obs).shape)
         # print(loaded_obs.shape)
@@ -85,10 +59,6 @@ def load_all_images():
     print(all_images.shape)
 
     return all_images
-
-
-all_images = load_all_images()
-train_loader = torch.utils.data.DataLoader(all_images, batch_size=args.batch_size, shuffle=True, **kwargs)
 
 class VAE(nn.Module):
     def __init__(self):
@@ -224,13 +194,7 @@ class ConvVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         return self.decode(z), mu, logvar
 
-# model = VAE()
-model = ConvVAE()
-if args.cuda:
-    model.cuda()
-# optimizer = optim.Adam(model.parameters(), lr=1e-3)
-optimizer = optim.Adam(model.parameters(), lr=0.008) # 0.008 got down to ~1050 # 0.0075 got to 1036
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+
 
 
 # Reconstruction + KL divergence losses summed over all elements and batch
@@ -280,7 +244,7 @@ def test(epoch):
     for i, (data) in enumerate(train_loader):
         if args.cuda:
             data = data.cuda()
-        data = Variable(data, volatile=True)
+        data = Variable(data.float(), volatile=True)
         recon_batch, mu, logvar = model(data)
         test_loss += loss_function(recon_batch, data, mu, logvar).data[0]
         if i == 0:
@@ -298,13 +262,13 @@ def test(epoch):
             #.permute(1, 2, 0)
 
             # comparison = torch.cat([data[0], recon_batch[0].view(3, 210, 160)])
-            comparison = torch.cat([data[0], recon_batch[0]])
+            # comparison = torch.cat([data[0], recon_batch[0].permute(0, 3, 1, 2)])
             # print(comparison.data.cpu())
             # print(type(comparison.data.cpu()))
             # print(type(comparison.data.cpu().numpy()))
             # print(comparison.data.cpu().numpy().shape)
 
-            image_data = comparison.data.cpu()#.numpy()
+            # image_data = comparison.data.cpu()#.numpy()
 
             # save_image(image_data, 'atari_results/reconstruction_' + str(epoch) + '.png', nrow=1)
 
@@ -315,19 +279,72 @@ def test(epoch):
     test_loss /= len(train_loader.dataset)
     print('====> Test set loss: {:.4f}'.format(test_loss))
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='VAE MNIST Example')
+    parser.add_argument('--batch-size', type=int, default=32, metavar='N',
+                        help='input batch size for training (default: 128)')
+    parser.add_argument('--epochs', type=int, default=50, metavar='N',
+                        help='number of epochs to train (default: 10)')
+    parser.add_argument('--no-cuda', action='store_true', default=False,
+                        help='enables CUDA training')
+    parser.add_argument('--seed', type=int, default=1, metavar='S',
+                        help='random seed (default: 1)')
+    parser.add_argument('--log-interval', type=int, default=10, metavar='N',
+                        help='how many batches to wait before logging training status')
+    args = parser.parse_args()
+    args.cuda = not args.no_cuda and torch.cuda.is_available()
 
-for epoch in range(1, args.epochs + 1):
-    scheduler.step()
-    train(epoch)
-    test(epoch)
-    sample = Variable(torch.randn(64, model.latent_dim_size))
+    torch.manual_seed(args.seed)
     if args.cuda:
-        sample = sample.cuda()
-    sample = model.decode(sample).cpu()
+        torch.cuda.manual_seed(args.seed)
 
-    save_image(sample.data.view(64, 3, 64, 64),
-               'atari_results/sample_' + str(epoch) + '.png')
+    kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 
-    if epoch == 30:
-        plt.imshow(sample.data[0].permute(1, 2, 0))
-        plt.show()
+    # normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+    #                                      std=[0.229, 0.224, 0.225])
+    transform = transforms.Compose([
+        transforms.ToPILImage(),
+        # transforms.Resize((110, 80), Image.NEAREST), # 84 in DQN paper
+        transforms.Resize((110, 84), Image.NEAREST),  # 84 in DQN paper
+        # transforms.Resize((80, 110), Image.NEAREST), # but 80 is half of 160
+        # transforms.RandomCrop(84), # todo take bottom
+        # transforms.Resize(64),
+        # transforms.Lambda(lambda x: x[:80, :]),
+        lambda x: np.array(x)[-84:, :],
+        transforms.ToPILImage(),  # can do so much better than this
+        transforms.Resize(64, Image.NEAREST),  # todo could also just adapt architecture to deal with 84x84
+        transforms.ToTensor()
+        # normalize,
+    ])
+
+    all_images = load_all_images()
+    train_loader = torch.utils.data.DataLoader(all_images, batch_size=args.batch_size, shuffle=True, **kwargs)
+
+    # model = VAE()
+    model = ConvVAE()
+    if args.cuda:
+        model.cuda()
+    optimizer = optim.Adam(model.parameters(), lr=0.003)
+    # optimizer = optim.Adam(model.parameters(), lr=0.0075)  # 0.008 got down to ~1050 (not anymore?) # 0.0075 got to 1036
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+
+    # Main loop
+    for epoch in range(1, args.epochs + 1):
+        scheduler.step()
+        train(epoch)
+        test(epoch)
+        sample = Variable(torch.randn(64, model.latent_dim_size))
+        if args.cuda:
+            sample = sample.cuda()
+        sample = model.decode(sample).cpu()
+
+        save_image(sample.data.view(64, 3, 64, 64),
+                   'atari_results/sample_' + str(epoch) + '.png')
+
+        # if epoch == 30:
+        if epoch % 10 == 0:
+            plt.imshow(sample.data[0].permute(1, 2, 0))
+            plt.show()
+
+    # Save the Model
+    torch.save(model.state_dict(), 'conv-vae-epoch-{}.pkl'.format(epoch))
